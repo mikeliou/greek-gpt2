@@ -10,7 +10,7 @@ from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard
 from tokenizers import trainers, Tokenizer, normalizers, ByteLevelBPETokenizer
 from transformers import AutoConfig, AutoTokenizer, FlaxAutoModelForCausalLM
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from pathlib import Path
 # from utilities import batch_iterator, tokenize_function, group_texts
 
@@ -60,6 +60,7 @@ def train_step(state, batch, dropout_rng):
     dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
 
     def loss_fn(params):
+        print(batch)
         labels = batch.pop("labels")
         logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
 
@@ -94,15 +95,15 @@ def eval_step(params, batch):
 language = "el"
 model_config = "distilgpt2"
 
-max_seq_length = 512  # 1024
+max_seq_length = 512  # 512  # 1024
 
-per_device_batch_size = 16  # 64
+per_device_batch_size = 64  # 16  # 64
 num_epochs = 10
 training_seed = 0
 learning_rate = 3e-4
 
-root_dir = "D:\\greek_gpt2\\"
-model_dir = root_dir + model_config + f"-pretrained-{language}"
+root_dir = "//mnt//disks//persist"
+model_dir = model_config + f"-pretrained-{language}"
 Path(model_dir).mkdir(parents=True, exist_ok=True)
 
 config = AutoConfig.from_pretrained(model_config)
@@ -126,14 +127,14 @@ raw_dataset["train"] = load_dataset("oscar", f"unshuffled_deduplicated_{language
 raw_dataset["validation"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[:5%]", cache_dir=root_dir)
 
 # these cells should be commented out to run on full dataset
-raw_dataset["train"] = raw_dataset["train"].select(range(20000))
-raw_dataset["validation"] = raw_dataset["validation"].select(range(2000))
+# raw_dataset["train"] = raw_dataset["train"].select(range(20000))
+# raw_dataset["validation"] = raw_dataset["validation"].select(range(2000))
 
 tokenizer = AutoTokenizer.from_pretrained(f"{model_dir}")
-# tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, num_proc=4, remove_columns=raw_dataset["train"].column_names)
-tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, remove_columns=raw_dataset["train"].column_names)
-# tokenized_datasets = tokenized_datasets.map(group_texts, batched=True, num_proc=4)
-tokenized_datasets = tokenized_datasets.map(group_texts, batched=True)
+tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, num_proc=4, remove_columns=raw_dataset["train"].column_names)
+# tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, remove_columns=raw_dataset["train"].column_names)
+tokenized_datasets = tokenized_datasets.map(group_texts, batched=True, num_proc=4)
+# tokenized_datasets = tokenized_datasets.map(group_texts, batched=True)
 
 total_batch_size = per_device_batch_size * jax.device_count()
 num_train_steps = len(tokenized_datasets["train"]) // total_batch_size * num_epochs
@@ -184,3 +185,6 @@ for epoch in tqdm(range(1, num_epochs + 1), desc=f"Epoch ...", position=0, leave
         progress_bar_eval.write(
             f"Eval... ({epoch}/{num_epochs} | Loss: {eval_metrics['loss']} | Perplexity: {eval_metrics['perplexity']})"
         )
+
+model.push_to_hub("test-gpt-seq512-ep10-bs64", use_temp_dir=True)
+tokenizer.push_to_hub("test-gpt-seq512-ep10-bs64", use_temp_dir=True)
