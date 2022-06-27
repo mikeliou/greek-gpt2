@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import math
 import numpy as np
 
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets, DatasetDict
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard
 from tokenizers import trainers, Tokenizer, normalizers, ByteLevelBPETokenizer
@@ -103,14 +103,20 @@ training_seed = 0
 learning_rate = 3e-4
 
 root_dir = "//mnt//disks//persist"
-model_dir = model_config + f"-pretrained-{language}"
+model_dir = model_config + f"-pretrained-{language}-v2"
 Path(model_dir).mkdir(parents=True, exist_ok=True)
 
 config = AutoConfig.from_pretrained(model_config)
 config.save_pretrained(f"{model_dir}")
 
 # train tokenizer
-raw_dataset = load_dataset("oscar", f"unshuffled_deduplicated_{language}", cache_dir=root_dir)
+oscar_dataset = load_dataset("oscar", f"unshuffled_deduplicated_{language}", cache_dir=root_dir)
+grcorpus_dataset = load_dataset("text", data_files={'train': ['../grcorpus.txt']},
+                                                cache_dir=root_dir)
+wiki_dataset = load_dataset("text", data_files={'train': ['../wiki_el.txt']},
+                                            cache_dir=root_dir)
+raw_dataset = DatasetDict({'train': concatenate_datasets([oscar_dataset['train'], grcorpus_dataset['train'], wiki_dataset['train']])})
+
 tokenizer = ByteLevelBPETokenizer()
 tokenizer.train_from_iterator(batch_iterator(), vocab_size=config.vocab_size, min_frequency=2, special_tokens=[
     "<s>",
@@ -122,9 +128,21 @@ tokenizer.train_from_iterator(batch_iterator(), vocab_size=config.vocab_size, mi
 
 tokenizer.save(f"{model_dir}/tokenizer.json")
 
+oscar_dataset["train"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[5%:]", cache_dir=root_dir)
+oscar_dataset["validation"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[:5%]", cache_dir=root_dir)
+print(f"oscar_dataset: train: {len(oscar_dataset['train'])}, validation: {len(oscar_dataset['validation'])}")
 
-raw_dataset["train"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[5%:]", cache_dir=root_dir)
-raw_dataset["validation"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[:5%]", cache_dir=root_dir)
+grcorpus_dataset["train"] = load_dataset("text", data_files={'train': ['../grcorpus.txt']}, split="train[5%:]", cache_dir=root_dir)
+grcorpus_dataset["validation"] = load_dataset("text", data_files={'train': ['../grcorpus.txt']}, split="train[:5%]", cache_dir=root_dir)
+print(f"grcorpus_dataset: train: {len(grcorpus_dataset['train'])}, validation: {len(grcorpus_dataset['validation'])}")
+
+wiki_dataset["train"] = load_dataset("text", data_files={'train': ['../wiki_el.txt']}, split="train[5%:]", cache_dir=root_dir)
+wiki_dataset["validation"] = load_dataset("text", data_files={'train': ['../wiki_el.txt']},  split="train[:5%]",cache_dir=root_dir)
+print(f"wiki_dataset: train: {len(wiki_dataset['train'])}, validation: {len(wiki_dataset['validation'])}")
+
+raw_dataset["train"] = concatenate_datasets([oscar_dataset['train'], grcorpus_dataset['train'], wiki_dataset['train']])
+raw_dataset["validation"] = concatenate_datasets([oscar_dataset['validation'], grcorpus_dataset['validation'], wiki_dataset['validation']])
+print(f"raw_dataset: train: {len(raw_dataset['train'])}, validation: {len(raw_dataset['validation'])}")
 
 # these cells should be commented out to run on full dataset
 # raw_dataset["train"] = raw_dataset["train"].select(range(20000))
@@ -186,5 +204,5 @@ for epoch in tqdm(range(1, num_epochs + 1), desc=f"Epoch ...", position=0, leave
             f"Eval... ({epoch}/{num_epochs} | Loss: {eval_metrics['loss']} | Perplexity: {eval_metrics['perplexity']})"
         )
 
-model.push_to_hub("test-gpt-seq512-ep10-bs64", use_temp_dir=True)
-tokenizer.push_to_hub("test-gpt-seq512-ep10-bs64", use_temp_dir=True)
+model.push_to_hub("gpt-oscar_grcorpus_wiki-seq512-ep10-bs64", use_temp_dir=True)
+tokenizer.push_to_hub("gpt-oscar_grcorpus_wiki-seq512-ep10-bs64", use_temp_dir=True)
