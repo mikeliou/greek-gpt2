@@ -5,12 +5,12 @@ import jax.numpy as jnp
 import math
 import numpy as np
 
-from datasets import load_dataset
+from datasets import load_dataset, concatenate_datasets, DatasetDict
 from flax.training import train_state
 from flax.training.common_utils import get_metrics, onehot, shard
 from tokenizers import trainers, Tokenizer, normalizers, ByteLevelBPETokenizer
 from transformers import AutoConfig, AutoTokenizer, FlaxAutoModelForCausalLM
-from tqdm.notebook import tqdm
+from tqdm import tqdm
 from pathlib import Path
 # from utilities import batch_iterator, tokenize_function, group_texts
 
@@ -60,6 +60,7 @@ def train_step(state, batch, dropout_rng):
     dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
 
     def loss_fn(params):
+        print(batch)
         labels = batch.pop("labels")
         logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
 
@@ -94,22 +95,28 @@ def eval_step(params, batch):
 language = "el"
 model_config = "distilgpt2"
 
-max_seq_length = 512  # 1024
+max_seq_length = 512  # 512  # 1024
 
-per_device_batch_size = 16  # 64
+per_device_batch_size = 64  # 16  # 64
 num_epochs = 10
 training_seed = 0
 learning_rate = 3e-4
 
-root_dir = "D:\\greek_gpt2\\"
-model_dir = root_dir + model_config + f"-pretrained-{language}"
+root_dir = "//mnt//disks//persist"
+model_dir = model_config + f"-pretrained-{language}-v2"
 Path(model_dir).mkdir(parents=True, exist_ok=True)
 
 config = AutoConfig.from_pretrained(model_config)
 config.save_pretrained(f"{model_dir}")
 
 # train tokenizer
-raw_dataset = load_dataset("oscar", f"unshuffled_deduplicated_{language}", cache_dir=root_dir)
+oscar_dataset = load_dataset("oscar", f"unshuffled_deduplicated_{language}", cache_dir=root_dir)
+grcorpus_dataset = load_dataset("text", data_files={'train': ['../grcorpus.txt']},
+                                                cache_dir=root_dir)
+wiki_dataset = load_dataset("text", data_files={'train': ['../wiki_el.txt']},
+                                            cache_dir=root_dir)
+raw_dataset = DatasetDict({'train': concatenate_datasets([oscar_dataset['train'], grcorpus_dataset['train'], wiki_dataset['train']])})
+
 tokenizer = ByteLevelBPETokenizer()
 tokenizer.train_from_iterator(batch_iterator(), vocab_size=config.vocab_size, min_frequency=2, special_tokens=[
     "<s>",
@@ -121,19 +128,31 @@ tokenizer.train_from_iterator(batch_iterator(), vocab_size=config.vocab_size, mi
 
 tokenizer.save(f"{model_dir}/tokenizer.json")
 
+oscar_dataset["train"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[5%:]", cache_dir=root_dir)
+oscar_dataset["validation"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[:5%]", cache_dir=root_dir)
+print(f"oscar_dataset: train: {len(oscar_dataset['train'])}, validation: {len(oscar_dataset['validation'])}")
 
-raw_dataset["train"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[5%:]", cache_dir=root_dir)
-raw_dataset["validation"] = load_dataset("oscar", f"unshuffled_deduplicated_{language}", split="train[:5%]", cache_dir=root_dir)
+grcorpus_dataset["train"] = load_dataset("text", data_files={'train': ['../grcorpus.txt']}, split="train[5%:]", cache_dir=root_dir)
+grcorpus_dataset["validation"] = load_dataset("text", data_files={'train': ['../grcorpus.txt']}, split="train[:5%]", cache_dir=root_dir)
+print(f"grcorpus_dataset: train: {len(grcorpus_dataset['train'])}, validation: {len(grcorpus_dataset['validation'])}")
+
+wiki_dataset["train"] = load_dataset("text", data_files={'train': ['../wiki_el.txt']}, split="train[5%:]", cache_dir=root_dir)
+wiki_dataset["validation"] = load_dataset("text", data_files={'train': ['../wiki_el.txt']},  split="train[:5%]",cache_dir=root_dir)
+print(f"wiki_dataset: train: {len(wiki_dataset['train'])}, validation: {len(wiki_dataset['validation'])}")
+
+raw_dataset["train"] = concatenate_datasets([oscar_dataset['train'], grcorpus_dataset['train'], wiki_dataset['train']])
+raw_dataset["validation"] = concatenate_datasets([oscar_dataset['validation'], grcorpus_dataset['validation'], wiki_dataset['validation']])
+print(f"raw_dataset: train: {len(raw_dataset['train'])}, validation: {len(raw_dataset['validation'])}")
 
 # these cells should be commented out to run on full dataset
-raw_dataset["train"] = raw_dataset["train"].select(range(20000))
-raw_dataset["validation"] = raw_dataset["validation"].select(range(2000))
+# raw_dataset["train"] = raw_dataset["train"].select(range(20000))
+# raw_dataset["validation"] = raw_dataset["validation"].select(range(2000))
 
 tokenizer = AutoTokenizer.from_pretrained(f"{model_dir}")
-# tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, num_proc=4, remove_columns=raw_dataset["train"].column_names)
-tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, remove_columns=raw_dataset["train"].column_names)
-# tokenized_datasets = tokenized_datasets.map(group_texts, batched=True, num_proc=4)
-tokenized_datasets = tokenized_datasets.map(group_texts, batched=True)
+tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, num_proc=4, remove_columns=raw_dataset["train"].column_names)
+# tokenized_datasets = raw_dataset.map(tokenize_function, batched=True, remove_columns=raw_dataset["train"].column_names)
+tokenized_datasets = tokenized_datasets.map(group_texts, batched=True, num_proc=4)
+# tokenized_datasets = tokenized_datasets.map(group_texts, batched=True)
 
 total_batch_size = per_device_batch_size * jax.device_count()
 num_train_steps = len(tokenized_datasets["train"]) // total_batch_size * num_epochs
@@ -184,3 +203,6 @@ for epoch in tqdm(range(1, num_epochs + 1), desc=f"Epoch ...", position=0, leave
         progress_bar_eval.write(
             f"Eval... ({epoch}/{num_epochs} | Loss: {eval_metrics['loss']} | Perplexity: {eval_metrics['perplexity']})"
         )
+
+model.push_to_hub("gpt-oscar_grcorpus_wiki-seq512-ep10-bs64", use_temp_dir=True)
+tokenizer.push_to_hub("gpt-oscar_grcorpus_wiki-seq512-ep10-bs64", use_temp_dir=True)
