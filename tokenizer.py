@@ -1,8 +1,10 @@
 from datasets import load_dataset
 from tokenizers import trainers, Tokenizer, normalizers, ByteLevelBPETokenizer
 
+root_dir = "//mnt//disks//persist//greek-gpt2"
+
 # load dataset
-dataset = load_dataset("oscar", "unshuffled_deduplicated_no", split="train")
+dataset = load_dataset("oscar", "unshuffled_deduplicated_el", split="train", cache_dir=root_dir)
 
 # Instantiate tokenizer
 tokenizer = ByteLevelBPETokenizer()
@@ -21,4 +23,4 @@ tokenizer.train_from_iterator(batch_iterator(), vocab_size=50257, min_frequency=
 ])
 
 # Save files to disk
-tokenizer.save("./norwegian-gpt2/tokenizer.json")
+tokenizer.save("./tokenizer.json")
